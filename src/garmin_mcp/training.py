@@ -898,11 +898,16 @@ def register_tools(app):
                 data = garmin_client.get_training_status(date_str)
                 if data:
                     vo2_data = (data.get("mostRecentVO2Max") or {}).get("generic") or {}
+                    cycling_vo2_data = (data.get("mostRecentVO2Max") or {}).get("cycling") or {}
                     vo2 = vo2_data.get("vo2MaxValue")
                     if vo2 is not None:
                         vo2_rounded = round(vo2, 1)
                         if vo2_rounded != last_vo2:  # deduplicate unchanged values
-                            trend.append({"date": date_str, "vo2_max": vo2_rounded})
+                            entry: Dict[str, Any] = {"date": date_str, "vo2_max": vo2_rounded}
+                            cycling_vo2 = cycling_vo2_data.get("vo2MaxPreciseValue") or cycling_vo2_data.get("vo2MaxValue")
+                            if cycling_vo2 is not None:
+                                entry["cycling_vo2_max"] = round(cycling_vo2, 1)
+                            trend.append(entry)
                             last_vo2 = vo2_rounded
             except Exception:
                 pass
