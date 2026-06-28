@@ -737,11 +737,15 @@ def register_tools(app):
             try:
                 data = garmin_client.get_training_status(date_str)
                 if data:
-                    status_data = (
+                    status_map = (
                         (data.get("mostRecentTrainingStatus") or {})
                         .get("latestTrainingStatusData") or {}
                     )
-                    atl_dto = (status_data.get("acuteTrainingLoadDTO") or {})
+                    # latestTrainingStatusData is a {device_id: {...}} map
+                    device_data: Dict[str, Any] = {}
+                    for device_data in status_map.values():
+                        break
+                    atl_dto = (device_data.get("acuteTrainingLoadDTO") or {})
                     vo2_data = (data.get("mostRecentVO2Max") or {}).get("generic") or {}
                     entry: Dict[str, Any] = {"date": date_str}
                     atl = atl_dto.get("dailyTrainingLoadAcute")
@@ -758,7 +762,7 @@ def register_tools(app):
                     acwr_status = atl_dto.get("acwrStatus")
                     if acwr_status:
                         entry["acwr_status"] = acwr_status
-                    ts = status_data.get("trainingStatusDTO", {})
+                    ts = (device_data.get("trainingStatusDTO") or {})
                     ts_label = ts.get("trainingStatusCyclingFeedbackPhrase") or ts.get("trainingStatusFeedbackPhrase")
                     if ts_label:
                         entry["training_status"] = ts_label
