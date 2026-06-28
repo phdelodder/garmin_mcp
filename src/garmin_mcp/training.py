@@ -703,6 +703,25 @@ def register_tools(app):
             return f"Error requesting data reload: {str(e)}"
 
     @app.tool()
+    async def get_max_metrics(date: str) -> str:
+        """Get max metric data for a date from the Garmin metrics service.
+
+        Returns VO2max, cycling FTP, and lactate threshold estimates from the
+        metrics-service endpoint — a separate data path from get_training_status.
+        Useful when get_training_status returns null for these values on some devices.
+
+        Args:
+            date: Date in YYYY-MM-DD format
+        """
+        try:
+            data = garmin_client.get_max_metrics(date)
+            if not data:
+                return f"No max metrics found for {date}"
+            return json.dumps(data, indent=2)
+        except Exception as e:
+            return f"Error retrieving max metrics: {str(e)}"
+
+    @app.tool()
     async def get_training_load_trend(start_date: str, end_date: str) -> str:
         """Get the Performance Management Chart (CTL/ATL/TSB) over a date range.
 
