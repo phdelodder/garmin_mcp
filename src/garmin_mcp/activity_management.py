@@ -922,4 +922,68 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving activity types: {str(e)}"
 
+    @app.tool()
+    async def get_activity_rpe(date: str, name_hint: str = None) -> str:
+        """Get RPE (Rate of Perceived Exertion) for an activity by date.
+
+        Eliminates the two-step lookup required when only an ICU iXXXXXX ID is
+        known: internally calls get_activities_by_date to find the numeric Garmin ID,
+        then fetches the activity to extract workout_rpe.
+
+        RPE is stored on a 0-100 scale in Garmin; this tool returns both the raw
+        value and the Borg 1-10 equivalent (raw ÷ 10).
+
+        Args:
+            date: Date of the activity in YYYY-MM-DD format
+            name_hint: Optional partial activity name to filter when multiple
+                       activities exist on the same date (case-insensitive)
+        """
+        try:
+            params: Dict[str, Any] = {
+                "startDate": date,
+                "endDate": date,
+                "start": "0",
+                "limit": "20",
+            }
+            activities = garmin_client.connectapi(
+                garmin_client.garmin_connect_activities,
+                params=params,
+            )
+            if not activities:
+                return f"No activities found for {date}"
+
+            matched = activities
+            if name_hint:
+                hint_lower = name_hint.lower()
+                matched = [a for a in activities if hint_lower in (a.get("activityName") or "").lower()]
+                if not matched:
+                    matched = activities  # fall back to all if hint matches nothing
+
+            results = []
+            for a in matched:
+                act_id = a.get("activityId")
+                if act_id is None:
+                    continue
+                try:
+                    act = garmin_client.get_activity(int(act_id))
+                    summary = (act or {}).get("summaryDTO") or {}
+                    rpe_raw = summary.get("directWorkoutRpe")
+                    results.append({
+                        "activity_id": act_id,
+                        "activity_name": a.get("activityName"),
+                        "start_time_local": a.get("startTimeLocal"),
+                        "rpe_raw_0_100": rpe_raw,
+                        "rpe_borg_1_10": round(rpe_raw / 10, 1) if rpe_raw is not None else None,
+                    })
+                except Exception:
+                    pass
+
+            if not results:
+                return f"No RPE data found for activities on {date}"
+            if len(results) == 1:
+                return json.dumps({k: v for k, v in results[0].items() if v is not None}, indent=2)
+            return json.dumps([{k: v for k, v in r.items() if v is not None} for r in results], indent=2)
+        except Exception as e:
+            return f"Error retrieving RPE: {str(e)}"
+
     return app
