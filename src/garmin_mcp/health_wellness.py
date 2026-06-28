@@ -866,6 +866,60 @@ def register_tools(app):
             return f"Error retrieving weekly intensity minutes data: {str(e)}"
 
     @app.tool()
+    async def get_morning_wellness(date: str) -> str:
+        """Get curated morning wellness snapshot for gate decisions.
+
+        Combines the key metrics needed for a training go/no-go decision into a
+        single lightweight call. Avoids the 15KB raw dump of get_user_summary.
+
+        Body Battery rule: always use body_battery_at_wake_time for gate decisions —
+        this is the BB level before any activity depletes it. Never use
+        body_battery_realtime_depleted (from get_stats) for this purpose.
+
+        Args:
+            date: Date in YYYY-MM-DD format (use today's date)
+        """
+        try:
+            summary = garmin_client.get_user_summary(date)
+            if not summary:
+                return f"No user summary found for {date}"
+
+            sleep_score: Dict[str, Any] = {}
+            try:
+                sleep_raw = garmin_client.get_sleep_data(date)
+                sleep_dto = (sleep_raw or {}).get("dailySleepDTO") or {}
+                scores = sleep_dto.get("sleepScores") or {}
+                sleep_score = scores.get("overall") or {}
+                total_sleep_s = sleep_dto.get("sleepTimeSeconds")
+            except Exception:
+                total_sleep_s = None
+
+            hrv_data: Dict[str, Any] = {}
+            try:
+                hrv_raw = garmin_client.get_hrv_data(date)
+                hrv_data = (hrv_raw or {}).get("hrvSummary") or {}
+            except Exception:
+                pass
+
+            result: Dict[str, Any] = {
+                "date": date,
+                "body_battery_at_wake_time": summary.get("bodyBatteryAtWakeTime"),
+                "resting_heart_rate_bpm": summary.get("restingHeartRate"),
+                "last_7_days_avg_rhr_bpm": summary.get("lastSevenDaysAvgRestingHeartRate"),
+                "sleep_score": sleep_score.get("value"),
+                "sleep_score_qualifier": sleep_score.get("qualifierKey"),
+                "sleep_hours": round(total_sleep_s / 3600, 1) if total_sleep_s else None,
+                "hrv_last_night_avg_ms": hrv_data.get("lastNightAvg"),
+                "hrv_weekly_avg_ms": hrv_data.get("weeklyAvg"),
+                "hrv_status": hrv_data.get("status"),
+                "avg_stress_level": summary.get("averageStressLevel"),
+            }
+            result = {k: v for k, v in result.items() if v is not None}
+            return json.dumps(result, indent=2)
+        except Exception as e:
+            return f"Error retrieving morning wellness: {str(e)}"
+
+    @app.tool()
     async def get_morning_training_readiness(date: str) -> str:
         """Get morning training readiness score
 
