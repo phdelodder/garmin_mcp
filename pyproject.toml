@@ -11,7 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "python-dotenv==1.2.2",
     "garminconnect==0.3.6",
-    "requests==2.33.0",
+    "requests==2.34.2",
     "mcp>=1.23.0",
     "fitparse>=1.2.0",
 ]
