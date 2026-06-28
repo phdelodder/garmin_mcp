@@ -960,4 +960,29 @@ def register_tools(app):
         except Exception as e:
             return f"Error retrieving morning training readiness: {str(e)}"
 
+    @app.tool()
+    async def get_running_tolerance(
+        start_date: str, end_date: str, aggregation: str = "weekly"
+    ) -> str:
+        """Get running tolerance (injury risk proxy) for a date range.
+
+        Tracks accumulated running load vs. the athlete's tolerance baseline.
+        Useful for multi-sport athletes who mix running with cycling — running
+        sessions contribute to total ATL and should not be treated as invisible.
+
+        Args:
+            start_date: Start date in YYYY-MM-DD format
+            end_date: End date in YYYY-MM-DD format
+            aggregation: 'daily' or 'weekly' (default: 'weekly')
+        """
+        try:
+            if aggregation not in ("daily", "weekly"):
+                return "aggregation must be 'daily' or 'weekly'"
+            data = garmin_client.get_running_tolerance(start_date, end_date, aggregation)
+            if not data:
+                return f"No running tolerance data found between {start_date} and {end_date}"
+            return json.dumps(data, indent=2)
+        except Exception as e:
+            return f"Error retrieving running tolerance: {str(e)}"
+
     return app
