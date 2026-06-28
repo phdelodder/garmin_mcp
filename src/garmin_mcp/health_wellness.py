@@ -76,7 +76,9 @@ def register_tools(app):
                 "body_battery_drained": stats.get('bodyBatteryDrainedValue'),
                 "body_battery_highest": stats.get('bodyBatteryHighestValue'),
                 "body_battery_lowest": stats.get('bodyBatteryLowestValue'),
-                "body_battery_current": stats.get('bodyBatteryMostRecentValue'),
+                # Realtime value depleted by activity — not the wake-time level.
+                # For gate decisions use get_morning_wellness → body_battery_at_wake_time.
+                "body_battery_realtime_depleted": stats.get('bodyBatteryMostRecentValue'),
 
                 # SpO2
                 "avg_spo2_percent": stats.get('averageSpo2'),
