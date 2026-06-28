@@ -1,5 +1,9 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/taxuspt-garmin-mcp-badge.png)](https://mseep.ai/app/taxuspt-garmin-mcp)
 
+> **Fork notice:** This is [`phdelodder/garmin_mcp`](https://github.com/phdelodder/garmin_mcp), a personal fork of [`Taxuspt/garmin_mcp`](https://github.com/Taxuspt/garmin_mcp).
+> It includes bug fixes and additional tools pending upstream merge (see commit history for details).
+> To use this fork instead of upstream, replace the `--from` URL in your MCP config with `git+https://github.com/phdelodder/garmin_mcp`.
+
 # Garmin MCP Server
 
 This Model Context Protocol (MCP) server connects to Garmin Connect and exposes your fitness and health data to Claude and other MCP-compatible clients.
@@ -25,7 +29,7 @@ Garmin's API is accessed via the awesome [python-garminconnect](https://github.c
 
 ### Tool Coverage
 
-This MCP server implements **110+ tools** covering ~90% of the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library (v0.3.2):
+This MCP server implements **110+ tools** covering ~90% of the [python-garminconnect](https://github.com/cyberjunky/python-garminconnect) library (v0.3.6):
 
 - ✅ Activity Management (20 tools) - includes write tools for type, description, event type, perceived effort, and feel
 - ✅ Health & Wellness (31 tools) - includes custom lightweight summary tools
