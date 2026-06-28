@@ -537,6 +537,10 @@ def register_tools(app):
     async def get_activity_splits(activity_id: Union[int, str]) -> str:
         """Get splits for an activity
 
+        Note: avg_cadence from lap splits can diverge significantly from the actual
+        stream data (>13 rpm discrepancy confirmed). For cadence-based conclusions use
+        get_activity_fit_data or get_activity_streams as the authoritative source.
+
         Args:
             activity_id: ID of the activity to retrieve splits for
         """
