@@ -256,6 +256,66 @@ async def test_get_activity_fit_data_shift_summary(app_with_activity_analysis, m
     assert summary["gear_usage"]["53/17t"] == 3
 
 
+def _shift_event_msgs(timestamps):
+    """Build (record, event) message pairs for a rear-gear shift at each timestamp."""
+    messages = []
+    for ts in timestamps:
+        messages.append(_make_mock_fit_message("record", {"cadence": 85}))
+        messages.append(_make_mock_fit_message("event", {
+            "event": "rear_gear_change",
+            "gear_change_data": (53 << 24) | (17 << 16) | (2 << 8) | 4,
+            "timestamp": ts,
+        }))
+    return messages
+
+
+@pytest.mark.asyncio
+async def test_panic_burst_detects_tight_time_cluster(app_with_activity_analysis, mock_garmin_client):
+    """3+ shifts within the burst window (10s) count as one panic burst"""
+    mock_garmin_client.download_activity.return_value = b"\x00" * 20
+
+    messages = _shift_event_msgs([
+        "2026-01-01 10:00:00",
+        "2026-01-01 10:00:03",
+        "2026-01-01 10:00:06",
+    ])
+
+    with patch("garmin_mcp.activity_analysis.fitparse") as mock_fp:
+        mock_fp.FitFile.return_value = _mock_fitfile(messages)
+        result = await app_with_activity_analysis.call_tool(
+            "get_activity_fit_data", {"activity_id": ACTIVITY_ID}
+        )
+
+    data = json.loads(result[0][0].text)
+    assert data["shift_summary"]["panic_burst_episodes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_panic_burst_ignores_shifts_spread_over_time(app_with_activity_analysis, mock_garmin_client):
+    """Same shift count as a burst, but spread minutes apart, is not a panic burst
+
+    Regression test for the pre-fix bug: 3 shifts used to always count as a burst
+    purely because they fell within 6 consecutive index positions, regardless of
+    how far apart in time they actually occurred.
+    """
+    mock_garmin_client.download_activity.return_value = b"\x00" * 20
+
+    messages = _shift_event_msgs([
+        "2026-01-01 10:00:00",
+        "2026-01-01 10:01:00",
+        "2026-01-01 10:05:00",
+    ])
+
+    with patch("garmin_mcp.activity_analysis.fitparse") as mock_fp:
+        mock_fp.FitFile.return_value = _mock_fitfile(messages)
+        result = await app_with_activity_analysis.call_tool(
+            "get_activity_fit_data", {"activity_id": ACTIVITY_ID}
+        )
+
+    data = json.loads(result[0][0].text)
+    assert data["shift_summary"]["panic_burst_episodes"] == 0
+
+
 # ---------------------------------------------------------------------------
 # Records (time series)
 # ---------------------------------------------------------------------------

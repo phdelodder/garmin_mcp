@@ -556,16 +556,31 @@ def _compute_shift_summary(shifts: list) -> dict:
     gear_usage: dict = {}
     cadences_at_shift = []
 
-    # Burst detection: 3+ shifts within ~6 consecutive events
+    # Burst detection: 3+ shifts within a short elapsed-time window — a real
+    # flurry of gear changes, not an artifact of where the shift falls in a
+    # fixed-size index grouping (bug found 2026-07-05: the old index-chunking
+    # made this effectively ceil(shift_count / 6), regardless of timing).
+    # Window is anchored to the first shift in a candidate group (not chained
+    # gap-to-gap) so a burst stays a genuinely tight cluster.
+    PANIC_BURST_WINDOW_S = 10.0
     panic_bursts = 0
     burst_i = 0
-    while burst_i < len(shifts):
-        window = [shifts[burst_i]]
-        for j in range(burst_i + 1, min(burst_i + 6, len(shifts))):
-            window.append(shifts[j])
-        if len(window) >= 3:
+    n_shifts = len(shifts)
+    while burst_i < n_shifts:
+        t0 = _parse_iso_timestamp(shifts[burst_i].get("timestamp"))
+        if t0 is None:
+            burst_i += 1
+            continue
+        j = burst_i + 1
+        while j < n_shifts:
+            tj = _parse_iso_timestamp(shifts[j].get("timestamp"))
+            if tj is None or (tj - t0).total_seconds() > PANIC_BURST_WINDOW_S:
+                break
+            j += 1
+        group_size = j - burst_i
+        if group_size >= 3:
             panic_bursts += 1
-            burst_i += len(window)
+            burst_i = j
         else:
             burst_i += 1
 
