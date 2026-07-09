@@ -90,6 +90,18 @@ def _semicircles_to_degrees(value) -> Optional[float]:
     return round(value * (180.0 / 2**31), 6)
 
 
+def _parse_iso_timestamp(s):
+    """Parse a FIT record/lap timestamp string (e.g. '2026-05-15 02:27:08', optionally
+    'Z'-suffixed) into a datetime. Returns None if unparseable."""
+    if not s:
+        return None
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Extraction helpers
 # ---------------------------------------------------------------------------
@@ -673,8 +685,19 @@ def _compute_hrv_metrics(rr_intervals_s: List[float]) -> Optional[Dict]:
     }
 
 
-def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
-    """Parse a FIT file and extract structured cycling data."""
+def _parse_fit(
+    fit_bytes: bytes,
+    include_records: bool,
+    segment_start_s: Optional[float] = None,
+    segment_end_s: Optional[float] = None,
+) -> dict:
+    """Parse a FIT file and extract structured cycling data.
+
+    segment_start_s/segment_end_s optionally restrict the record-based analytics
+    (grade analysis, HR drift, temperature stats, climb detection, power duration
+    curve) to an elapsed-time window measured from the first record. Session/lap/
+    shift data is unaffected — only the derived per-second analytics are re-scoped.
+    """
     fit_bytes = _extract_fit_bytes(fit_bytes)
     fitfile = fitparse.FitFile(io.BytesIO(fit_bytes))
 
@@ -904,12 +927,39 @@ def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
 
     shift_summary = _compute_shift_summary(shifts)
 
+    # Optional segment scoping: restrict record-based analytics to a custom
+    # elapsed-time window (e.g. a 20-min test block within a longer ride)
+    # instead of always analyzing the full ride. Session/laps/shifts stay
+    # full-ride — only the analysis functions below run on the slice.
+    analysis_records = records
+    segment_info = None
+    if records and (segment_start_s is not None or segment_end_s is not None):
+        t0 = _parse_iso_timestamp(records[0].get("timestamp"))
+        if t0 is not None:
+            lo = segment_start_s if segment_start_s is not None else 0.0
+            hi = segment_end_s if segment_end_s is not None else float("inf")
+            sliced = []
+            for r in records:
+                ts = _parse_iso_timestamp(r.get("timestamp"))
+                if ts is None:
+                    continue
+                elapsed_s = (ts - t0).total_seconds()
+                if lo <= elapsed_s <= hi:
+                    sliced.append(r)
+            if sliced:
+                analysis_records = sliced
+                segment_info = {
+                    "segment_start_s": segment_start_s,
+                    "segment_end_s": segment_end_s,
+                    "record_count": len(sliced),
+                }
+
     # Record-based analytics (computed from per-second data regardless of include_records flag)
-    grade_stats = _grade_analysis(records) if records else None
-    hr_drift = _compute_hr_drift(records) if records else None
-    temp_stats = _compute_temperature_stats(records) if records else None
-    climbs = _detect_climbs(records) if records else []
-    pdc = _compute_power_duration_curve(records) if records else None
+    grade_stats = _grade_analysis(analysis_records) if analysis_records else None
+    hr_drift = _compute_hr_drift(analysis_records) if analysis_records else None
+    temp_stats = _compute_temperature_stats(analysis_records) if analysis_records else None
+    climbs = _detect_climbs(analysis_records) if analysis_records else []
+    pdc = _compute_power_duration_curve(analysis_records) if analysis_records else None
 
     if grade_stats:
         session["grade_analysis"] = grade_stats
@@ -917,6 +967,8 @@ def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
         session["hr_drift"] = hr_drift
     if temp_stats:
         session["temperature_stats"] = temp_stats
+    if segment_info:
+        session["segment_analyzed"] = segment_info
 
     result: Dict[str, Any] = {
         "session": session,
@@ -944,17 +996,8 @@ def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
         # window from start_time + total_elapsed_time_s, filter R-R pairs.
         import datetime as _dt
 
-        def _parse_iso(s):
-            if not s:
-                return None
-            try:
-                # FIT timestamps may be "2026-05-15 02:27:08" or with tz
-                return _dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                return None
-
         for lap in laps:
-            lap_start = _parse_iso(lap.get("start_time"))
+            lap_start = _parse_iso_timestamp(lap.get("start_time"))
             elapsed = lap.get("total_elapsed_time_s")
             if lap_start is None or not elapsed:
                 continue
@@ -964,7 +1007,7 @@ def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
             # rr_pairs[i][0] is a datetime-like value from fitparse.
             lap_rr = []
             for ts, rr in rr_pairs:
-                ts_dt = ts if isinstance(ts, _dt.datetime) else _parse_iso(ts)
+                ts_dt = ts if isinstance(ts, _dt.datetime) else _parse_iso_timestamp(ts)
                 if ts_dt is None:
                     continue
                 # Compare naively if either is tz-naive (FIT timestamps are UTC)
@@ -991,7 +1034,7 @@ def _parse_fit(fit_bytes: bytes, include_records: bool) -> dict:
             ]
 
     if include_records:
-        result["records"] = records
+        result["records"] = analysis_records
 
     return result
 
@@ -1007,6 +1050,8 @@ def register_tools(app):
     async def get_activity_fit_data(
         activity_id: Union[int, str],
         include_records: bool = False,
+        segment_start_s: Optional[float] = None,
+        segment_end_s: Optional[float] = None,
     ) -> str:
         """Download and parse FIT file for an activity to expose advanced cycling data.
 
@@ -1037,6 +1082,13 @@ def register_tools(app):
             activity_id: Garmin activity ID
             include_records: Include full per-second time series (default False).
                              Warning: adds significant data volume for long rides.
+            segment_start_s: Optional elapsed seconds from ride start — restricts grade
+                             analysis, HR drift, temperature stats, climb detection, and
+                             power duration curve to this window (e.g. isolate a 20-min
+                             FTP test block within a longer ride). Session/laps/shifts
+                             are unaffected. Omit for full-ride analysis (default).
+            segment_end_s: Optional elapsed seconds from ride start — end of the window
+                           above. Omit for "to end of ride".
         """
         if not FITPARSE_AVAILABLE:
             return (
@@ -1059,7 +1111,12 @@ def register_tools(app):
             raw = bytes(fit_bytes)
 
             try:
-                parsed = _parse_fit(raw, include_records=include_records)
+                parsed = _parse_fit(
+                    raw,
+                    include_records=include_records,
+                    segment_start_s=segment_start_s,
+                    segment_end_s=segment_end_s,
+                )
             except Exception as parse_err:
                 return json.dumps({
                     "error": str(parse_err),

@@ -319,6 +319,70 @@ async def test_get_activity_fit_data_records_included_when_requested(app_with_ac
 
 
 # ---------------------------------------------------------------------------
+# Segment scoping
+# ---------------------------------------------------------------------------
+
+def _record_at(offset_s, **fields):
+    ts = f"2026-01-01 10:00:{offset_s:02d}"
+    base = {"cadence": 85, "power": 200 + offset_s, "heart_rate": 140, "timestamp": ts}
+    base.update(fields)
+    return _make_mock_fit_message("record", base)
+
+
+@pytest.mark.asyncio
+async def test_get_activity_fit_data_segment_scoping_restricts_analysis(
+    app_with_activity_analysis, mock_garmin_client
+):
+    """segment_start_s/segment_end_s restrict analytics to the elapsed-time window"""
+    mock_garmin_client.download_activity.return_value = b"\x00" * 20
+
+    records = [_record_at(i) for i in range(6)]  # offsets 0..5
+
+    with patch("garmin_mcp.activity_analysis.fitparse") as mock_fp:
+        mock_fp.FitFile.return_value = _mock_fitfile(records)
+        result = await app_with_activity_analysis.call_tool(
+            "get_activity_fit_data",
+            {
+                "activity_id": ACTIVITY_ID,
+                "include_records": True,
+                "segment_start_s": 1,
+                "segment_end_s": 3,
+            },
+        )
+
+    text = result[0][0].text
+    data = json.loads(text)
+
+    assert data["session"]["segment_analyzed"]["record_count"] == 3
+    assert len(data["records"]) == 3
+    assert data["records"][0]["timestamp"] == "2026-01-01 10:00:01"
+    assert data["records"][-1]["timestamp"] == "2026-01-01 10:00:03"
+
+
+@pytest.mark.asyncio
+async def test_get_activity_fit_data_no_segment_analyzes_full_ride(
+    app_with_activity_analysis, mock_garmin_client
+):
+    """Without segment params, analytics run on the full record set as before"""
+    mock_garmin_client.download_activity.return_value = b"\x00" * 20
+
+    records = [_record_at(i) for i in range(6)]
+
+    with patch("garmin_mcp.activity_analysis.fitparse") as mock_fp:
+        mock_fp.FitFile.return_value = _mock_fitfile(records)
+        result = await app_with_activity_analysis.call_tool(
+            "get_activity_fit_data",
+            {"activity_id": ACTIVITY_ID, "include_records": True},
+        )
+
+    text = result[0][0].text
+    data = json.loads(text)
+
+    assert "segment_analyzed" not in data["session"]
+    assert len(data["records"]) == 6
+
+
+# ---------------------------------------------------------------------------
 # Left/right balance decoding
 # ---------------------------------------------------------------------------
 
