@@ -12,7 +12,9 @@ dependencies = [
     "python-dotenv==1.2.2",
     "garminconnect==0.3.6",
     "requests==2.34.2",
-    "mcp>=1.23.0",
+    # mcp 2.x renamed mcp.server.fastmcp -> mcp.server.mcpserver (FastMCP ->
+    # MCPServer). Cap until this server is ported to the new API.
+    "mcp>=1.23.0,<2",
     "fitparse>=1.2.0",
 ]
 
