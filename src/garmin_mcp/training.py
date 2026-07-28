@@ -756,16 +756,25 @@ def register_tools(app):
             try:
                 data = garmin_client.get_training_status(date_str)
                 if data:
-                    status_map = (
-                        (data.get("mostRecentTrainingStatus") or {})
-                        .get("latestTrainingStatusData") or {}
-                    )
-                    # latestTrainingStatusData is a {device_id: {...}} map
-                    device_data: Dict[str, Any] = {}
-                    for device_data in status_map.values():
-                        break
-                    atl_dto = (device_data.get("acuteTrainingLoadDTO") or {})
-                    vo2_data = (data.get("mostRecentVO2Max") or {}).get("generic") or {}
+                    # latestTrainingStatusData is a dict keyed by device ID, not
+                    # the DTO directly. Pick the primary training device when
+                    # available, fall back to the first device. Use `or {}` to
+                    # coalesce explicit nulls (Garmin returns None for sections
+                    # the user has no data in, which breaks chained `.get`).
+                    recent_status = data.get("mostRecentTrainingStatus") or {}
+                    latest_data = recent_status.get("latestTrainingStatusData") or {}
+                    status_data: Dict[str, Any] = {}
+                    for dev_data in latest_data.values():
+                        if not isinstance(dev_data, dict):
+                            continue
+                        if dev_data.get("primaryTrainingDevice"):
+                            status_data = dev_data
+                            break
+                        if not status_data:
+                            status_data = dev_data
+                    atl_dto = status_data.get("acuteTrainingLoadDTO") or {}
+                    most_recent_vo2 = data.get("mostRecentVO2Max") or {}
+                    vo2_data = most_recent_vo2.get("generic") or {}
                     entry: Dict[str, Any] = {"date": date_str}
                     atl = atl_dto.get("dailyTrainingLoadAcute")
                     ctl = atl_dto.get("dailyTrainingLoadChronic")
@@ -781,10 +790,36 @@ def register_tools(app):
                     acwr_status = atl_dto.get("acwrStatus")
                     if acwr_status:
                         entry["acwr_status"] = acwr_status
-                    ts = (device_data.get("trainingStatusDTO") or {})
-                    ts_label = ts.get("trainingStatusCyclingFeedbackPhrase") or ts.get("trainingStatusFeedbackPhrase")
-                    if ts_label:
-                        entry["training_status"] = ts_label
+                    acwr_pct = atl_dto.get("acwrPercent")
+                    if acwr_pct is not None:
+                        entry["acwr_percent"] = acwr_pct
+                    chronic_min = atl_dto.get("minTrainingLoadChronic")
+                    if chronic_min is not None:
+                        entry["optimal_chronic_load_min"] = round(chronic_min, 1)
+                    chronic_max = atl_dto.get("maxTrainingLoadChronic")
+                    if chronic_max is not None:
+                        entry["optimal_chronic_load_max"] = round(chronic_max, 1)
+                    # Device data now has training status fields flattened — no
+                    # longer wrapped in a trainingStatusDTO sub-object.
+                    # Some accounts still return the status fields wrapped in a
+                    # trainingStatusDTO sub-object, and cycling-first athletes
+                    # get the phrase under a cycling-specific key. Check every
+                    # shape before giving up.
+                    ts_dto = status_data.get("trainingStatusDTO") or {}
+                    ts_phrase = (
+                        status_data.get("trainingStatusFeedbackPhrase")
+                        or status_data.get("trainingStatusCyclingFeedbackPhrase")
+                        or ts_dto.get("trainingStatusFeedbackPhrase")
+                        or ts_dto.get("trainingStatusCyclingFeedbackPhrase")
+                    )
+                    if ts_phrase:
+                        entry["training_status"] = ts_phrase
+                    ts_code = status_data.get("trainingStatus")
+                    if ts_code is not None:
+                        entry["training_status_code"] = ts_code
+                    fitness_trend = status_data.get("fitnessTrend")
+                    if fitness_trend is not None:
+                        entry["fitness_trend"] = fitness_trend
                     vo2 = vo2_data.get("vo2MaxValue")
                     if vo2 is not None:
                         entry["vo2_max"] = round(vo2, 1)
@@ -803,6 +838,105 @@ def register_tools(app):
             "days_with_data": len(trend),
             "trend": trend,
         }, indent=2)
+
+    @app.tool()
+    async def get_training_load_balance(date: str) -> str:
+        """Get Garmin's Load Focus — the distribution of the trailing-month
+        training load across Aerobic Low, Aerobic High, and Anaerobic intensity
+        bands, plus the system's feedback phrase (e.g. AEROBIC_HIGH_SHORTAGE,
+        BALANCED, ANAEROBIC_SHORTAGE).
+
+        Use this to assess whether the athlete's training mix is balanced or
+        deficient in a particular intensity band. Each band reports its load
+        alongside Garmin's target range; a `status` of "below", "within", or
+        "above" is computed from the load relative to that range.
+
+        Args:
+            date: Date in YYYY-MM-DD format
+        """
+        try:
+            data = garmin_client.get_training_status(date)
+        except Exception as e:
+            return f"Error retrieving training load balance: {str(e)}"
+
+        if not data:
+            return f"No training load balance data found for {date}."
+
+        # Same `or {}` pattern as the rest of this module: Garmin returns
+        # explicit None for sections the user has no data in, which breaks
+        # chained .get with a default arg.
+        load_balance = data.get("mostRecentTrainingLoadBalance") or {}
+        load_map = load_balance.get("metricsTrainingLoadBalanceDTOMap") or {}
+
+        # device-keyed dict; prefer the primary training device, fall back to
+        # the first device with data.
+        load_data: Dict[str, Any] = {}
+        for dev_data in load_map.values():
+            if not isinstance(dev_data, dict):
+                continue
+            if dev_data.get("primaryTrainingDevice"):
+                load_data = dev_data
+                break
+            if not load_data:
+                load_data = dev_data
+
+        if not load_data:
+            return f"No training load balance data found for {date}."
+
+        def _band(load_key: str, min_key: str, max_key: str) -> Optional[Dict[str, Any]]:
+            load = load_data.get(load_key)
+            tmin = load_data.get(min_key)
+            tmax = load_data.get(max_key)
+            if load is None and tmin is None and tmax is None:
+                return None
+            band: Dict[str, Any] = {}
+            if load is not None:
+                band["load"] = round(load, 1)
+            if tmin is not None:
+                band["target_min"] = tmin
+            if tmax is not None:
+                band["target_max"] = tmax
+            if load is not None and tmin is not None and tmax is not None:
+                if load < tmin:
+                    band["status"] = "below"
+                elif load > tmax:
+                    band["status"] = "above"
+                else:
+                    band["status"] = "within"
+            return band
+
+        result: Dict[str, Any] = {
+            "date": load_data.get("calendarDate", date),
+        }
+        feedback = load_data.get("trainingBalanceFeedbackPhrase")
+        if feedback:
+            result["feedback"] = feedback
+
+        aerobic_low = _band(
+            "monthlyLoadAerobicLow",
+            "monthlyLoadAerobicLowTargetMin",
+            "monthlyLoadAerobicLowTargetMax",
+        )
+        if aerobic_low:
+            result["aerobic_low"] = aerobic_low
+
+        aerobic_high = _band(
+            "monthlyLoadAerobicHigh",
+            "monthlyLoadAerobicHighTargetMin",
+            "monthlyLoadAerobicHighTargetMax",
+        )
+        if aerobic_high:
+            result["aerobic_high"] = aerobic_high
+
+        anaerobic = _band(
+            "monthlyLoadAnaerobic",
+            "monthlyLoadAnaerobicTargetMin",
+            "monthlyLoadAnaerobicTargetMax",
+        )
+        if anaerobic:
+            result["anaerobic"] = anaerobic
+
+        return json.dumps(result, indent=2)
 
     @app.tool()
     async def get_hrv_trend(start_date: str, end_date: str) -> str:
