@@ -154,7 +154,10 @@ class TestBodyBatteryRename:
         assert data["body_battery_realtime_depleted"] == 61
 
 
-# ── 4: cycling_vo2_max in get_vo2max_trend ──────────────────────────────────────
+# ── 4: per-sport VO2 max selection in get_vo2max_trend ──────────────────────────
+# get_vo2max_trend was rewritten upstream to track running/cycling histories
+# separately and select the sport with the best coverage for the "trend" series
+# (ties favor running), rather than folding both sports into every entry.
 
 class TestCyclingVo2Max:
     @pytest.fixture(autouse=True)
@@ -165,16 +168,22 @@ class TestCyclingVo2Max:
         self.app = _make_app(training, mock_garmin_client)
 
     @pytest.mark.asyncio
-    async def test_cycling_vo2_max_present(self):
+    async def test_running_selected_when_coverage_ties(self):
         result = await self.app.call_tool("get_vo2max_trend", {"start_date": "2026-06-14", "end_date": "2026-06-14"})
         data = json.loads(_text(result))
-        assert data["trend"][0].get("cycling_vo2_max") == 52.9
+        assert data.get("sport") == "running"
+        assert data["trend"][0].get("vo2_max") == 54.0
 
     @pytest.mark.asyncio
-    async def test_generic_vo2_max_still_present(self):
+    async def test_cycling_selected_when_only_sport_available(self, mock_garmin_client):
+        mock_garmin_client.get_training_status = Mock(return_value={
+            "mostRecentVO2Max": {"cycling": {"vo2MaxPreciseValue": 52.9}},
+        })
+        self.app = _make_app(training, mock_garmin_client)
         result = await self.app.call_tool("get_vo2max_trend", {"start_date": "2026-06-14", "end_date": "2026-06-14"})
         data = json.loads(_text(result))
-        assert data["trend"][0].get("vo2_max") == 54.0
+        assert data.get("sport") == "cycling"
+        assert data["trend"][0].get("vo2_max") == 52.9
 
 
 # ── 5: cadence warning in get_activity_splits docstring ────────────────────────
